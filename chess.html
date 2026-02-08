@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chess Analysis Pro - Standalone</title>
+    <!-- Подключение библиотек -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    <!-- Иконки Lucide -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #161512; margin: 0; }
+        .piece-font { font-family: serif; }
+        /* Кастомный скроллбар для компактности */
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 10px; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useCallback, useRef, useMemo } = React;
+
+        // --- Конфигурация времени ---
+        const TIME_CATEGORIES = [
+            { id: 'bullet', name: 'Пуля', icon: 'rocket', presets: [{ label: '1 мин', minutes: 1, increment: 0 }, { label: '1 + 1', minutes: 1, increment: 1 }, { label: '2 + 1', minutes: 2, increment: 1 }] },
+            { id: 'blitz', name: 'Блиц', icon: 'zap', presets: [{ label: '3 мин', minutes: 3, increment: 0 }, { label: '3 + 2', minutes: 3, increment: 2 }, { label: '5 мин', minutes: 5, increment: 0 }] },
+            { id: 'rapid', name: 'Рапид', icon: 'clock', presets: [{ label: '10 мин', minutes: 10, increment: 0 }, { label: '15 + 10', minutes: 15, increment: 10 }, { label: '30 мин', minutes: 30, increment: 0 }] },
+            { id: 'daily', name: 'Заочные', icon: 'sun', presets: [{ label: '1 день', minutes: 1440, increment: 0 }, { label: '3 дня', minutes: 4320, increment: 0 }, { label: '7 дней', minutes: 10080, increment: 0 }] }
+        ];
+
+        const LEVEL_CONFIG = {
+            1: { depth: 4, delay: 150, label: 'Beginner' },
+            2: { depth: 6, delay: 250, label: 'Easy' },
+            3: { depth: 8, delay: 350, label: 'Medium' },
+            4: { depth: 12, delay: 500, label: 'Hard' },
+            5: { depth: 18, delay: 700, label: 'Expert' },
+        };
+
+        const THEMES = {
+            green: { name: 'Green', light: '#eeeed2', dark: '#769656', lastMove: 'rgba(186, 202, 43, 0.7)', highlight: 'rgba(255, 255, 0, 0.4)' },
+            brown: { name: 'Brown', light: '#f0d9b5', dark: '#b58863', lastMove: 'rgba(205, 210, 106, 0.7)', highlight: 'rgba(214, 214, 24, 0.4)' },
+            blue: { name: 'Blue', light: '#dee3e6', dark: '#8ca2ad', lastMove: 'rgba(155, 199, 232, 0.7)', highlight: 'rgba(113, 169, 212, 0.4)' },
+            grey: { name: 'Grey', light: '#e4e4e4', dark: '#a0a0a0', lastMove: 'rgba(180, 180, 180, 0.4)', highlight: 'rgba(210, 210, 210, 0.7)' },
+            wood: { name: 'Wood', light: '#d8b281', dark: '#8b5a2b', lastMove: 'rgba(220, 180, 80, 0.7)', highlight: 'rgba(235, 190, 100, 0.4)' },
+            dark: { name: 'Dark', light: '#4b4b4b', dark: '#2d2d2d', lastMove: 'rgba(100, 100, 100, 0.7)', highlight: 'rgba(255, 255, 255, 0.1)' }
+        };
+
+        const PIECES = {
+            wP: '♙', wN: '♘', wB: '♗', wR: '♖', wQ: '♕', wK: '♔',
+            bP: '♟', bN: '♞', bB: '♝', bR: '♜', bQ: '♛', bK: '♚',
+        };
+
+        const formatTime = (seconds) => {
+            const m = Math.floor(seconds / 60);
+            const s = Math.floor(seconds % 60);
+            if (m >= 1440) return `${Math.floor(m / 1440)} д`;
+            return `${m}:${s < 10 ? '0' : ''}${s}`;
+        };
+
+        // --- Иконка через Lucide ---
+        const Icon = ({ name, size = 16, className = "" }) => {
+            const ref = useRef(null);
+            useEffect(() => {
+                if (window.lucide) {
+                    window.lucide.createIcons({
+                        attrs: { size, class: className },
+                        nameAttr: 'data-lucide'
+                    });
+                }
+            }, [name, size, className]);
+            return <i data-lucide={name} className={className}></i>;
+        };
+
+        // --- Движок ---
+        class StockfishEngine {
+            constructor(onInfo, onBestMove) {
+                this.onInfo = onInfo;
+                this.onBestMove = onBestMove;
+                this.init();
+            }
+            init() {
+                const blob = new Blob([`importScripts("https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js");`], { type: 'application/javascript' });
+                this.worker = new Worker(URL.createObjectURL(blob));
+                this.worker.onmessage = (e) => this.parseMessage(e.data);
+                this.send('uci');
+                this.send('setoption name Threads value 2');
+                this.send('setoption name Hash value 128');
+                this.send('setoption name MultiPV value 3');
+            }
+            send(cmd) { this.worker?.postMessage(cmd); }
+            parseMessage(msg) {
+                if (msg.startsWith('bestmove')) {
+                    const move = msg.split(' ')[1];
+                    if (move && move !== '(none)') this.onBestMove(move);
+                }
+                if (msg.startsWith('info') && msg.includes('multipv')) {
+                    const depth = parseInt(msg.match(/depth (\d+)/)?.[1] || '0');
+                    const multipv = parseInt(msg.match(/multipv (\d+)/)?.[1] || '1');
+                    const nps = parseInt(msg.match(/nps (\d+)/)?.[1] || '0');
+                    const pvMatch = msg.match(/ pv (.+)/);
+                    const scoreMatch = msg.match(/score (cp|mate) (-?\d+)/);
+                    if (pvMatch && scoreMatch) {
+                        const type = scoreMatch[1], val = parseInt(scoreMatch[2]);
+                        this.onInfo({ multipv, depth, nps, score: type === 'mate' ? `M${val}` : `${val}`, pv: pvMatch[1], rawScore: val });
+                    }
+                }
+            }
+            terminate() { this.worker?.terminate(); }
+        }
+
+        // --- App Component ---
+        function App() {
+            const [game, setGame] = useState(new Chess());
+            const [fen, setFen] = useState(game.fen());
+            const [orientation, setOrientation] = useState('w');
+            const [lastMove, setLastMove] = useState(null);
+            const [selectedSquare, setSelectedSquare] = useState(null);
+            const [mode, setMode] = useState('analysis');
+            const [userColor, setUserColor] = useState('w');
+            const [level, setLevel] = useState(3);
+            const [showTimeMenu, setShowTimeMenu] = useState(false);
+            const [themeName, setThemeName] = useState(() => localStorage.getItem('chess-theme') || 'green');
+            const theme = THEMES[themeName];
+
+            const [selectedPreset, setSelectedPreset] = useState(TIME_CATEGORIES[1].presets[1]);
+            const [whiteTime, setWhiteTime] = useState(selectedPreset.minutes * 60);
+            const [blackTime, setBlackTime] = useState(selectedPreset.minutes * 60);
+            const [isGameOver, setIsGameOver] = useState(false);
+            const [engineLines, setEngineLines] = useState({});
+            
+            const engine = useRef(null);
+            const timerRef = useRef(null);
+
+            useEffect(() => {
+                if (mode === 'play' && !isGameOver && game.history().length > 0) {
+                    timerRef.current = setInterval(() => {
+                        if (game.turn() === 'w') setWhiteTime(p => p <= 0 ? (setIsGameOver(true), 0) : p - 1);
+                        else setBlackTime(p => p <= 0 ? (setIsGameOver(true), 0) : p - 1);
+                    }, 1000);
+                } else if (timerRef.current) clearInterval(timerRef.current);
+                return () => { if (timerRef.current) clearInterval(timerRef.current); };
+            }, [game, mode, isGameOver]);
+
+            useEffect(() => {
+                engine.current = new StockfishEngine(
+                    (line) => setEngineLines(prev => ({ ...prev, [line.multipv]: line })),
+                    (move) => {
+                        const delay = mode === 'play' ? LEVEL_CONFIG[level].delay : 0;
+                        setTimeout(() => {
+                            setGame(prev => {
+                                if (mode === 'play' && prev.turn() !== userColor && !isGameOver) {
+                                    const copy = new Chess(prev.fen());
+                                    try {
+                                        const m = copy.move(move, { sloppy: true });
+                                        if (m) {
+                                            if (prev.turn() === 'b') setBlackTime(t => t + selectedPreset.increment);
+                                            else setWhiteTime(t => t + selectedPreset.increment);
+                                            setFen(copy.fen()); setLastMove({ from: m.from, to: m.to }); setEngineLines({}); return copy;
+                                        }
+                                    } catch(e) {}
+                                }
+                                return prev;
+                            });
+                        }, delay);
+                    }
+                );
+                return () => engine.current?.terminate();
+            }, [mode, userColor, level, isGameOver, selectedPreset]);
+
+            useEffect(() => {
+                if (engine.current && !isGameOver) {
+                    engine.current.send('stop');
+                    engine.current.send(`position fen ${fen}`);
+                    engine.current.send(`go depth ${mode === 'play' ? LEVEL_CONFIG[level].depth : 20}`);
+                }
+            }, [fen, mode, userColor, level, isGameOver]);
+
+            const normalizedLines = useMemo(() => {
+                const turn = game.turn(), moveNum = parseInt(fen.split(' ')[5]);
+                return Object.values(engineLines).sort((a, b) => a.multipv - b.multipv).map(line => {
+                    const val = parseInt(line.score.replace('M', ''));
+                    let wScore = turn === 'w' ? val : -val;
+                    let displayScore = line.score.startsWith('M') ? `#${wScore}` : (wScore / 100 > 0 ? '+' : '') + (wScore / 100).toFixed(2);
+                    const temp = new Chess(fen), uci = line.pv.split(' '), san = [];
+                    let cNum = moveNum, cTurn = turn;
+                    for (let i = 0; i < uci.length && i < 6; i++) {
+                        try {
+                            const m = temp.move(uci[i], { sloppy: true }); if (!m) break;
+                            if (cTurn === 'w') { san.push(`${cNum}. ${m.san}`); cTurn = 'b'; }
+                            else { san.push(i === 0 ? `${cNum}... ${m.san}` : m.san); cTurn = 'w'; cNum++; }
+                        } catch(e) { break; }
+                    }
+                    return { ...line, displayScore, sanPV: san.join(' '), whiteScore: wScore };
+                });
+            }, [engineLines, fen, game]);
+
+            const bestLine = normalizedLines[0];
+            const barPct = Math.max(0, Math.min(100, 50 - ((bestLine?.whiteScore ?? 0) * 5)));
+
+            const handleSquareClick = (square) => {
+                if (isGameOver || (mode === 'play' && game.turn() !== userColor)) return;
+                if (selectedSquare === square) { setSelectedSquare(null); return; }
+                if (selectedSquare) {
+                    try {
+                        const m = game.move({ from: selectedSquare, to: square, promotion: 'q' });
+                        if (m) {
+                            if (game.turn() === 'b') setWhiteTime(t => t + selectedPreset.increment); else setBlackTime(t => t + selectedPreset.increment);
+                            setFen(game.fen()); setLastMove({ from: m.from, to: m.to }); setSelectedSquare(null); setEngineLines({}); return;
+                        }
+                    } catch(e) {}
+                }
+                if (game.get(square)?.color === game.turn()) setSelectedSquare(square); else setSelectedSquare(null);
+            };
+
+            const renderBoard = () => {
+                const rks = orientation === 'w' ? [8,7,6,5,4,3,2,1] : [1,2,3,4,5,6,7,8];
+                const fls = orientation === 'w' ? ['a','b','c','d','e','f','g','h'] : ['h','g','f','e','d','c','b','a'];
+                return rks.flatMap(r => fls.map(f => {
+                    const sq = `${f}${r}`, pc = game.get(sq), dk = (rks.indexOf(r) + fls.indexOf(f)) % 2 === 1;
+                    const lm = lastMove && (lastMove.from === sq || lastMove.to === sq), sel = selectedSquare === sq;
+                    return (
+                        <div key={sq} onClick={() => handleSquareClick(sq)} className="relative flex items-center justify-center cursor-pointer" style={{ backgroundColor: dk ? theme.dark : theme.light }}>
+                            {lm && <div className="absolute inset-0" style={{ backgroundColor: theme.lastMove }} />}
+                            {sel && <div className="absolute inset-0" style={{ backgroundColor: theme.highlight }} />}
+                            {f === fls[0] && <span className={`absolute top-0.5 left-0.5 text-[9px] font-bold opacity-30 ${dk ? 'text-white' : 'text-black'}`}>{r}</span>}
+                            {r === rks[rks.length-1] && <span className={`absolute bottom-0.5 right-0.5 text-[9px] font-bold opacity-30 ${dk ? 'text-white' : 'text-black'}`}>{f}</span>}
+                            {pc && <span className="text-4xl md:text-5xl z-10 piece-font select-none" style={{ color: pc.color === 'w' ? 'white' : 'black', textShadow: pc.color === 'w' ? '0 0 2px black' : 'none' }}>{PIECES[`${pc.color}${pc.type.toUpperCase()}`]}</span>}
+                        </div>
+                    );
+                }));
+            };
+
+            return (
+                <div className="min-h-screen p-2 md:p-6 flex justify-center font-sans relative overflow-x-hidden">
+                    
+                    {showTimeMenu && (
+                        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
+                            <div className="bg-[#262421] w-full max-w-xs rounded-xl overflow-hidden shadow-2xl border border-white/10 flex flex-col">
+                                <div className="p-3 border-b border-white/10 flex justify-between items-center bg-[#2d2b28]">
+                                    <h2 className="text-sm font-bold uppercase tracking-wider text-white">Выбор времени</h2>
+                                    <button onClick={() => setShowTimeMenu(false)} className="text-slate-400 hover:text-white"><Icon name="x" size={20}/></button>
+                                </div>
+                                <div className="p-2 space-y-3 overflow-y-auto max-h-[70vh]">
+                                    {TIME_CATEGORIES.map((cat) => (
+                                        <div key={cat.id}>
+                                            <div className="flex items-center gap-2 px-2 py-1 opacity-50 mb-1 text-white">
+                                                <Icon name={cat.icon} size={12}/>
+                                                <span className="text-[10px] font-bold uppercase tracking-widest">{cat.name}</span>
+                                            </div>
+                                            <div className="grid grid-cols-3 gap-1 px-1">
+                                                {cat.presets.map((p) => (
+                                                    <button key={p.label} onClick={() => { setSelectedPreset(p); setWhiteTime(p.minutes*60); setBlackTime(p.minutes*60); setShowTimeMenu(false); setIsGameOver(false); }} className={`py-2 rounded-md font-bold text-[10px] transition ${selectedPreset.label === p.label ? 'bg-green-600/30 text-green-400 border border-green-600/50' : 'bg-white/5 text-slate-300 hover:bg-white/10'}`}>
+                                                        {p.label}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="max-w-4xl w-full flex flex-col gap-3">
+                        
+                        <div className="w-full max-w-[480px] mx-auto flex justify-between items-center px-1">
+                            <div className="flex items-center gap-2">
+                                <div className="w-8 h-8 bg-black/40 rounded border border-white/10 flex items-center justify-center text-slate-500"><Icon name="cpu" size={18}/></div>
+                                <div><div className="text-xs font-bold leading-none text-white">Движок (ур. {level})</div><div className="text-[9px] text-slate-500 uppercase font-black tracking-widest mt-0.5">Stockfish 10</div></div>
+                            </div>
+                            <div className={`px-3 py-1.5 rounded font-mono text-lg font-bold transition-all ${game.turn() !== userColor ? 'bg-white text-black shadow-lg' : 'bg-[#262421] text-slate-500'}`}>
+                                {formatTime(orientation === 'w' ? blackTime : whiteTime)}
+                            </div>
+                        </div>
+
+                        <div className="flex h-[320px] md:h-[480px] w-full max-w-[480px] mx-auto shadow-2xl rounded overflow-hidden border border-white/5 relative bg-[#262421]">
+                            <div className="w-4 bg-[#262421] relative flex flex-col justify-end">
+                                <div className="w-full bg-[#eeeeee] transition-all duration-700 ease-out" style={{ height: `${100 - barPct}%` }} />
+                                <div className="absolute inset-0 flex flex-col justify-between items-center py-2 text-[8px] font-black mix-blend-difference text-white pointer-events-none opacity-40">
+                                    <span>{bestLine?.whiteScore > 0 ? `+${(bestLine.whiteScore/100).toFixed(1)}` : ''}</span>
+                                    <span>0.0</span>
+                                    <span>{bestLine?.whiteScore < 0 ? (bestLine.whiteScore/100).toFixed(1) : ''}</span>
+                                </div>
+                            </div>
+                            <div className="flex-1 grid grid-cols-8 grid-rows-8 border-l border-white/5">{renderBoard()}</div>
+                            {isGameOver && (
+                                <div className="absolute inset-0 bg-black/80 z-20 flex flex-col items-center justify-center p-4 text-center backdrop-blur-sm">
+                                    <Icon name="trophy" size={48} className="text-yellow-500 mb-2" />
+                                    <h3 className="text-xl font-bold mb-1 text-white">Игра окончена</h3>
+                                    <p className="text-xs text-slate-400 mb-4">Время истекло</p>
+                                    <button onClick={() => { setIsGameOver(false); setGame(new Chess()); setFen(game.fen()); setWhiteTime(selectedPreset.minutes*60); setBlackTime(selectedPreset.minutes*60); }} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-full font-bold text-xs transition-transform active:scale-95">Новая игра</button>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="w-full max-w-[480px] mx-auto flex justify-between items-center px-1">
+                            <div className="flex items-center gap-2">
+                                <div className="w-8 h-8 bg-blue-600/20 rounded border border-blue-500/20 flex items-center justify-center text-blue-400"><Icon name="user" size={18}/></div>
+                                <div><div className="text-xs font-bold leading-none text-white">Вы</div><div className="text-[9px] text-slate-500 uppercase font-black tracking-widest mt-0.5">Игрок</div></div>
+                            </div>
+                            <div className={`px-3 py-1.5 rounded font-mono text-lg font-bold transition-all ${game.turn() === userColor ? 'bg-white text-black shadow-lg' : 'bg-[#262421] text-slate-500'}`}>
+                                {formatTime(orientation === 'w' ? whiteTime : blackTime)}
+                            </div>
+                        </div>
+
+                        {/* Анализ */}
+                        <div className="w-full max-w-[480px] mx-auto bg-[#1e1d1a] border border-white/5 rounded overflow-hidden">
+                            <div className="flex items-center justify-between px-2 py-1 bg-[#262421] border-b border-white/5">
+                                <div className="flex items-center gap-2 text-[9px] font-black uppercase text-slate-500">
+                                    <Icon name="activity" size={10} className="text-blue-500"/> {bestLine?.nps ? Math.floor(bestLine.nps/1000) : 0}k/s | Глуб: {bestLine?.depth || 0}
+                                </div>
+                                <span className="text-[8px] font-bold text-slate-600 tracking-tighter uppercase">Stockfish 10 Analysis</span>
+                            </div>
+                            <div className="divide-y divide-white/[0.03]">
+                                {[1, 2, 3].map(idx => {
+                                    const line = normalizedLines.find(l => l.multipv === idx);
+                                    return (
+                                        <div key={idx} className={`flex items-center gap-2 px-2 py-0.5 text-[10px] font-mono leading-tight ${idx === 1 ? 'bg-white/[0.03] text-slate-100' : 'text-slate-500 opacity-60 hover:opacity-100'}`}>
+                                            <span className="font-bold text-slate-600 w-4">#{idx}</span>
+                                            <span className={`font-black min-w-[38px] text-right ${line?.whiteScore < 0 ? 'text-red-400' : 'text-green-400'}`}>{line?.displayScore || '...'}</span>
+                                            <span className="truncate flex-1 tracking-tighter">{line?.sanPV || '---'}</span>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        {/* Контролы */}
+                        <div className="w-full max-w-[480px] mx-auto flex flex-col gap-2">
+                            <div className="flex items-center justify-between bg-[#262421] p-1.5 rounded-lg border border-white/10 shadow-xl">
+                                <div className="flex items-center gap-1">
+                                    <button onClick={() => { setGame(new Chess()); setFen(game.fen()); setLastMove(null); setEngineLines({}); setWhiteTime(selectedPreset.minutes*60); setBlackTime(selectedPreset.minutes*60); setIsGameOver(false); }} className="p-1.5 hover:bg-white/5 rounded text-red-500/80 transition"><Icon name="rotate-ccw" size={16}/></button>
+                                    <button onClick={() => { game.undo(); setFen(game.fen()); setLastMove(null); }} className="p-1.5 hover:bg-white/5 rounded text-slate-400 transition"><Icon name="chevron-left" size={18}/></button>
+                                    <button onClick={() => setOrientation(o => o === 'w' ? 'b' : 'w')} className="p-1.5 hover:bg-white/5 rounded text-slate-400 transition"><Icon name="flip-vertical" size={16}/></button>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <button onClick={() => setShowTimeMenu(true)} className="flex items-center gap-1.5 bg-[#33312e] px-2.5 py-1.5 rounded text-[10px] font-bold hover:bg-[#3d3b37] transition border border-white/5 text-yellow-500/90">
+                                        <Icon name="zap" size={12}/> {selectedPreset.label}
+                                    </button>
+                                    <div className="flex bg-black/40 p-0.5 rounded-md border border-white/10 overflow-hidden">
+                                        <button onClick={() => setMode('analysis')} className={`px-3 py-1 text-[9px] font-black rounded transition-all ${mode === 'analysis' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:text-slate-300'}`}>АНАЛИЗ</button>
+                                        <button onClick={() => setMode('play')} className={`px-3 py-1 text-[9px] font-black rounded transition-all ${mode === 'play' ? 'bg-orange-600 text-white shadow-md' : 'text-slate-500 hover:text-slate-300'}`}>ИГРА</button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="flex items-center justify-between px-2">
+                                <div className="flex gap-1.5">
+                                    {Object.keys(THEMES).map(t => (
+                                        <div key={t} onClick={() => { setThemeName(t); localStorage.setItem('chess-theme', t); }} className={`w-4 h-4 rounded-full cursor-pointer border transition-transform hover:scale-125 ${themeName === t ? 'border-blue-500' : 'border-transparent opacity-40'}`} style={{ background: `linear-gradient(135deg, ${THEMES[t].light} 50%, ${THEMES[t].dark} 50%)` }} />
+                                    ))}
+                                </div>
+                                {mode === 'play' && (
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Ур.</span>
+                                        <select value={level} onChange={(e) => setLevel(Number(e.target.value))} className="bg-transparent text-[10px] font-bold text-orange-400 outline-none cursor-pointer">
+                                            {[1,2,3,4,5].map(l => <option key={l} value={l}>{l}</option>)}
+                                        </select>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
