@@ -1,551 +1,720 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chess Analysis Pro - Wood Edition</title>
-    
-    <!-- Подключение библиотек в строгом порядке через UMD -->
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
-    
-    <!-- chess.js UMD 0.10.3 -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Chess Analysis Pro - Wood Edition</title>
 
-    <style>
-        body { background-color: #262421; margin: 0; overflow: hidden; font-family: sans-serif; }
-        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #454240; border-radius: 10px; }
-        
-        .no-select { user-select: none; -webkit-user-select: none; }
-        .piece-shadow { filter: drop-shadow(0 2px 2px rgba(0,0,0,0.4)); }
-        
-        @keyframes modalFadeIn {
-            from { opacity: 0; transform: scale(0.95); }
-            to { opacity: 1; transform: scale(1); }
-        }
-        .animate-modal { animation: modalFadeIn 0.2s ease-out forwards; }
-    </style>
+  <!-- UMD строго в порядке -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- chess.js UMD -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+
+  <style>
+    body { background:#262421; margin:0; overflow:hidden; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+    .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: #454240; border-radius: 10px; }
+    .no-select { user-select:none; -webkit-user-select:none; }
+    .piece-shadow { filter: drop-shadow(0 2px 2px rgba(0,0,0,0.35)); }
+  </style>
 </head>
+
 <body>
-    <div id="root"></div>
+  <div id="root"></div>
 
-    <script type="text/babel">
-        const { useState, useEffect, useCallback, useRef, useMemo } = React;
-        const { Chess } = window;
+  <script type="text/babel">
+    const { useEffect, useMemo, useRef, useState } = React;
 
-        // --- КОНФИГУРАЦИЯ ДВИЖКОВ ---
-        const ENGINES = {
-            stockfish8: {
-                name: "Stockfish 8",
-                url: "https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/8.0.0/stockfish.js"
-            },
-            stockfish10: {
-                name: "Stockfish 10",
-                url: "https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js"
-            },
-            stockfish16: {
-                name: "Stockfish 16",
-                url: "https://cdn.jsdelivr.net/npm/stockfish.js@16.1.0/stockfish.js"
-            }
-        };
+    // chess.js UMD: window.Chess есть, но это КЛАСС, не объект {Chess}
+    const Chess = window.Chess;
 
-        // --- КОМПОНЕНТ ФИГУР (Lichess cburnett) ---
-        const Piece = ({ type, color }) => {
-            const pieceName = `${color}${type.toUpperCase()}`;
-            const url = `https://lichess1.org/assets/piece/cburnett/${pieceName}.svg`;
+    // ---- ДВИЖКИ ----
+    // РЕКОМЕНДУЮ: положи локальный файл в репо, иначе CDN может умереть.
+    // Создай папку: /engines/ и положи туда stockfish10.js (или stockfish.js)
+    const ENGINES = {
+      local_sf10: {
+        name: "Stockfish (local) — recommended",
+        // пример: ./engines/stockfish10.js
+        // можешь назвать файл просто stockfish.js
+        urls: ["./engines/stockfish10.js", "./stockfish.js"]
+      },
+      cdn_sf10: {
+        name: "Stockfish 10 (CDN fallback)",
+        urls: ["https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js"]
+      },
+      cdn_sf8: {
+        name: "Stockfish 8 (CDN fallback)",
+        urls: ["https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/8.0.0/stockfish.js"]
+      },
+    };
 
-            return (
-                <img 
-                    src={url} 
-                    alt={pieceName}
-                    className="w-[90%] h-[90%] no-select piece-shadow transition-transform active:scale-90 pointer-events-none"
-                    style={{
-                        filter: color === 'w' 
-                            ? 'grayscale(100%) brightness(1.2) contrast(0.8)' 
-                            : 'grayscale(100%) brightness(0.4) contrast(1.1)'
-                    }}
-                />
-            );
-        };
+    // ---- ТЕМЫ ДОСКИ ----
+    const THEMES = {
+      classic_wood: { name: 'Classic Wood', light: '#f0d9b5', dark: '#b58863', lastMove: 'rgba(212,185,80,0.7)', highlight: 'rgba(255,255,0,0.18)' },
+      soft_brown:   { name: 'Soft Brown',   light: '#e6cfa7', dark: '#9a6b3f', lastMove: 'rgba(180,150,80,0.6)', highlight: 'rgba(255,255,255,0.08)' },
+      walnut:       { name: 'Walnut',       light: '#d9b382', dark: '#7a5230', lastMove: 'rgba(160,140,60,0.6)', highlight: 'rgba(255,255,255,0.08)' },
+      dark_wood:    { name: 'Dark Wood',    light: '#c2a074', dark: '#5a3a1f', lastMove: 'rgba(140,120,50,0.6)', highlight: 'rgba(255,255,255,0.05)' },
+    };
 
-        const THEMES = {
-            classic_wood: { name: 'Classic Wood', light: '#f0d9b5', dark: '#b58863', lastMove: 'rgba(212, 185, 80, 0.7)', highlight: 'rgba(255, 255, 0, 0.2)' },
-            soft_brown: { name: 'Soft Brown', light: '#e6cfa7', dark: '#9a6b3f', lastMove: 'rgba(180, 150, 80, 0.6)', highlight: 'rgba(255, 255, 255, 0.1)' },
-            walnut: { name: 'Walnut', light: '#d9b382', dark: '#7a5230', lastMove: 'rgba(160, 140, 60, 0.6)', highlight: 'rgba(255, 255, 255, 0.1)' },
-            dark_wood: { name: 'Dark Wood', light: '#c2a074', dark: '#5a3a1f', lastMove: 'rgba(140, 120, 50, 0.6)', highlight: 'rgba(255, 255, 255, 0.05)' }
-        };
+    // ---- ФИГУРЫ ----
+    const Piece = ({ type, color }) => {
+      const pieceName = `${color}${type.toUpperCase()}`;
+      const url = `https://lichess1.org/assets/piece/cburnett/${pieceName}.svg`;
+      return (
+        <img
+          src={url}
+          alt={pieceName}
+          className="w-[90%] h-[90%] no-select piece-shadow pointer-events-none"
+          style={{
+            filter: color === 'w'
+              ? 'grayscale(100%) brightness(1.15) contrast(0.85)'
+              : 'grayscale(100%) brightness(0.45) contrast(1.1)'
+          }}
+          draggable="false"
+        />
+      );
+    };
 
-        const LEVEL_CONFIG = {
-            1: { depth: 4, delay: 300, label: 'Новичок' },
-            2: { depth: 8, delay: 500, label: 'Средне' },
-            3: { depth: 12, delay: 700, label: 'Сложно' },
-            4: { depth: 16, delay: 900, label: 'Мастер' },
-            5: { depth: 20, delay: 1100, label: 'Гроссмейстер' },
-        };
+    // ---- УРОВНИ ----
+    const LEVEL_CONFIG = {
+      1: { depth: 4,  delay: 150, label: 'Новичок' },
+      2: { depth: 8,  delay: 250, label: 'Средне' },
+      3: { depth: 12, delay: 350, label: 'Сложно' },
+      4: { depth: 16, delay: 500, label: 'Мастер' },
+      5: { depth: 20, delay: 650, label: 'Гроссмейстер' },
+    };
 
-        const TIME_CONTROLS = [
-            {
-                category: 'Пуля',
-                icon: '🚀',
-                presets: [
-                    { label: '1+0', minutes: 1, increment: 0 },
-                    { label: '1+1', minutes: 1, increment: 1 },
-                    { label: '2+1', minutes: 2, increment: 1 }
-                ]
-            },
-            {
-                category: 'Блиц',
-                icon: '⚡',
-                presets: [
-                    { label: '3+0', minutes: 3, increment: 0 },
-                    { label: '3+2', minutes: 3, increment: 2 },
-                    { label: '5+0', minutes: 5, increment: 0 },
-                    { label: '5+3', minutes: 5, increment: 3 }
-                ]
-            },
-            {
-                category: 'Рапид',
-                icon: '⏱️',
-                presets: [
-                    { label: '10+0', minutes: 10, increment: 0 },
-                    { label: '15+10', minutes: 15, increment: 10 },
-                    { label: '30+0', minutes: 30, increment: 0 }
-                ]
-            }
-        ];
+    // ---- ВРЕМЯ ----
+    const TIME_CONTROLS = [
+      { category: 'Пуля', icon: '🚀', presets: [
+        { label: '1+0', minutes: 1,  increment: 0 },
+        { label: '1+1', minutes: 1,  increment: 1 },
+        { label: '2+1', minutes: 2,  increment: 1 },
+      ]},
+      { category: 'Блиц', icon: '⚡', presets: [
+        { label: '3+0', minutes: 3,  increment: 0 },
+        { label: '3+2', minutes: 3,  increment: 2 },
+        { label: '5+0', minutes: 5,  increment: 0 },
+        { label: '5+3', minutes: 5,  increment: 3 },
+      ]},
+      { category: 'Рапид', icon: '⏱️', presets: [
+        { label: '10+0', minutes: 10, increment: 0 },
+        { label: '15+10', minutes: 15, increment: 10 },
+        { label: '30+0', minutes: 30, increment: 0 },
+      ]},
+    ];
 
-        function App() {
-            const [game, setGame] = useState(new Chess());
-            const [fen, setFen] = useState(game.fen());
-            const [orientation, setOrientation] = useState('w');
-            const [lastMove, setLastMove] = useState(null);
-            const [selectedSquare, setSelectedSquare] = useState(null);
-            const [sidebarTab, setSidebarTab] = useState('analysis');
-            const [userColor, setUserColor] = useState('w');
-            const [level, setLevel] = useState(3);
-            const [themeName, setThemeName] = useState('classic_wood');
-            const theme = THEMES[themeName];
+    // ---- WORKER HELPERS ----
+    function makeWorkerFromUrl(url) {
+      // важно: importScripts работает внутри DedicatedWorkerGlobalScope
+      const blob = new Blob([`importScripts(${JSON.stringify(url)});`], { type: 'application/javascript' });
+      const workerUrl = URL.createObjectURL(blob);
+      const w = new Worker(workerUrl);
+      // освобождаем blob-url после создания
+      URL.revokeObjectURL(workerUrl);
+      return w;
+    }
 
-            // Состояние движка
-            const [engineKey, setEngineKey] = useState('stockfish10');
+    async function tryCreateWorker(urls) {
+      // Пробуем по очереди URL. Если один не загрузился — пробуем следующий.
+      for (const url of urls) {
+        try {
+          const w = makeWorkerFromUrl(url);
+          // если importScripts не смог загрузить — обычно будет ошибка в worker
+          // Подстрахуемся таймаутом готовности.
+          await new Promise((resolve, reject) => {
+            let ok = false;
+            const t = setTimeout(() => {
+              if (!ok) reject(new Error("Worker init timeout"));
+            }, 2000);
 
-            // Состояние времени
-            const [selectedTime, setSelectedTime] = useState({ label: '10+0', min: 10, inc: 0 });
-            const [whiteTime, setWhiteTime] = useState(600);
-            const [blackTime, setBlackTime] = useState(600);
-            const [showTimeModal, setShowTimeModal] = useState(false);
-            
-            const [isGameOver, setIsGameOver] = useState(false);
-            const [engineLines, setEngineLines] = useState({});
-            
-            const workerRef = useRef(null);
-            const timerRef = useRef(null);
+            w.onmessage = (e) => {
+              const msg = String(e.data || "");
+              if (msg.includes("uciok") || msg.includes("readyok")) {
+                ok = true;
+                clearTimeout(t);
+                resolve(true);
+              }
+            };
 
-            // Инициализация/Смена движка
-            useEffect(() => {
-                const stockfishUrl = ENGINES[engineKey].url;
-                const blob = new Blob([`importScripts("${stockfishUrl}");`], { type: 'application/javascript' });
-                const worker = new Worker(URL.createObjectURL(blob));
-                workerRef.current = worker;
+            w.onerror = () => {
+              clearTimeout(t);
+              reject(new Error("Worker load failed"));
+            };
 
-                worker.onmessage = (e) => {
-                    const msg = e.data;
-                    if (msg.startsWith('bestmove')) {
-                        const moveUci = msg.split(' ')[1];
-                        if (moveUci && moveUci !== '(none)') handleEngineMove(moveUci);
-                    }
-                    if (msg.startsWith('info') && msg.includes('multipv')) {
-                        const depth = msg.match(/depth (\d+)/)?.[1];
-                        const multipv = msg.match(/multipv (\d+)/)?.[1];
-                        const scoreMatch = msg.match(/score (cp|mate) (-?\d+)/);
-                        const pvMatch = msg.match(/ pv (.+)/);
+            w.postMessage("uci");
+            w.postMessage("isready");
+          });
 
-                        if (pvMatch && scoreMatch && multipv) {
-                            const type = scoreMatch[1];
-                            const val = parseInt(scoreMatch[2]);
-                            setEngineLines(prev => ({
-                                ...prev,
-                                [multipv]: { depth, score: type === 'mate' ? `#${val}` : val, pv: pvMatch[1] }
-                            }));
-                        }
-                    }
-                };
+          return { worker: w, url };
+        } catch (e) {
+          // следующая попытка
+        }
+      }
+      throw new Error("All engine URLs failed");
+    }
 
-                worker.postMessage('uci');
-                worker.postMessage('setoption name MultiPV value 3');
-                worker.postMessage('isready');
-                
-                return () => worker.terminate();
-            }, [engineKey]); // Перезагрузка при смене ключа движка
+    function App() {
+      const [game, setGame] = useState(() => new Chess());
+      const [fen, setFen] = useState(() => game.fen());
+      const [orientation, setOrientation] = useState('w');
+      const [sidebarTab, setSidebarTab] = useState('analysis'); // 'play' | 'analysis'
+      const [userColor] = useState('w'); // оставил как было (можно расширить)
+      const [level, setLevel] = useState(3);
+      const [themeName, setThemeName] = useState('classic_wood');
+      const theme = THEMES[themeName];
 
-            useEffect(() => {
-                if (workerRef.current && !isGameOver) {
-                    setEngineLines({});
-                    workerRef.current.postMessage('stop');
-                    workerRef.current.postMessage(`position fen ${fen}`);
-                    const targetDepth = sidebarTab === 'play' ? LEVEL_CONFIG[level].depth : 18;
-                    workerRef.current.postMessage(`go depth ${targetDepth}`);
+      const [selectedTime, setSelectedTime] = useState(() => ({ label: '10+0', minutes: 10, increment: 0 }));
+      const [whiteTime, setWhiteTime] = useState(() => 10 * 60);
+      const [blackTime, setBlackTime] = useState(() => 10 * 60);
+      const [showTimeModal, setShowTimeModal] = useState(false);
+
+      const [isGameOver, setIsGameOver] = useState(false);
+      const [lastMove, setLastMove] = useState(null);
+      const [selectedSquare, setSelectedSquare] = useState(null);
+
+      const [engineKey, setEngineKey] = useState('local_sf10');
+      const [engineStatus, setEngineStatus] = useState({ ok: true, text: "" });
+      const [engineLines, setEngineLines] = useState({}); // {1:{...},2:{...},3:{...}}
+
+      const workerRef = useRef(null);
+      const timerRef = useRef(null);
+      const pendingBestMoveRef = useRef(null);
+
+      // --- INIT / RELOAD ENGINE ---
+      useEffect(() => {
+        let cancelled = false;
+
+        async function initEngine() {
+          setEngineStatus({ ok: true, text: "Loading engine..." });
+          setEngineLines({});
+          pendingBestMoveRef.current = null;
+
+          // убиваем старый
+          if (workerRef.current) {
+            try { workerRef.current.terminate(); } catch {}
+            workerRef.current = null;
+          }
+
+          const urls = ENGINES[engineKey]?.urls || [];
+          try {
+            const { worker, url } = await tryCreateWorker(urls);
+            if (cancelled) { try { worker.terminate(); } catch {} return; }
+
+            workerRef.current = worker;
+            setEngineStatus({ ok: true, text: `Engine OK (${url})` });
+
+            worker.onmessage = (e) => {
+              const msg = String(e.data || "");
+              if (msg.startsWith("bestmove")) {
+                const moveUci = msg.split(" ")[1];
+                if (moveUci && moveUci !== "(none)") {
+                  pendingBestMoveRef.current = moveUci;
+                  handleEngineMove(moveUci);
                 }
-            }, [fen, sidebarTab, level, isGameOver, engineKey]);
+              }
+              if (msg.startsWith("info") && msg.includes("multipv")) {
+                const depth = Number(msg.match(/depth (\d+)/)?.[1] || 0);
+                const multipv = Number(msg.match(/multipv (\d+)/)?.[1] || 1);
+                const scoreMatch = msg.match(/score (cp|mate) (-?\d+)/);
+                const pvMatch = msg.match(/ pv (.+)/);
 
-            const handleEngineMove = (uci) => {
-                const delay = LEVEL_CONFIG[level].delay;
-                setTimeout(() => {
-                    setGame(prev => {
-                        if (sidebarTab === 'play' && prev.turn() !== userColor && !isGameOver) {
-                            const copy = new Chess(prev.fen());
-                            const m = copy.move({ 
-                                from: uci.substring(0,2), 
-                                to: uci.substring(2,4), 
-                                promotion: uci.length === 5 ? uci[4] : 'q' 
-                            });
-                            if (m) {
-                                if (prev.turn() === 'b') setBlackTime(t => t + selectedTime.inc);
-                                else setWhiteTime(t => t + selectedTime.inc);
-                                
-                                setFen(copy.fen());
-                                setLastMove({ from: m.from, to: m.to });
-                                return copy;
-                            }
-                        }
-                        return prev;
-                    });
-                }, delay);
-            };
-
-            // Таймеры
-            useEffect(() => {
-                if (sidebarTab === 'play' && !isGameOver && game.history().length > 0) {
-                    timerRef.current = setInterval(() => {
-                        if (game.turn() === 'w') {
-                            setWhiteTime(t => {
-                                if (t <= 0) { setIsGameOver(true); return 0; }
-                                return t - 1;
-                            });
-                        } else {
-                            setBlackTime(t => {
-                                if (t <= 0) { setIsGameOver(true); return 0; }
-                                return t - 1;
-                            });
-                        }
-                    }, 1000);
-                } else clearInterval(timerRef.current);
-                return () => clearInterval(timerRef.current);
-            }, [game, sidebarTab, isGameOver]);
-
-            const handleSquareClick = (sq) => {
-                if (isGameOver || (sidebarTab === 'play' && game.turn() !== userColor)) return;
-                if (selectedSquare === sq) { setSelectedSquare(null); return; }
-
-                if (selectedSquare) {
-                    const move = game.move({ from: selectedSquare, to: sq, promotion: 'q' });
-                    if (move) {
-                        if (game.turn() === 'b') setWhiteTime(t => t + selectedTime.inc);
-                        else setBlackTime(t => t + selectedTime.inc);
-
-                        setFen(game.fen());
-                        setLastMove({ from: move.from, to: move.to });
-                        setSelectedSquare(null);
-                        return;
+                if (pvMatch && scoreMatch) {
+                  const type = scoreMatch[1];
+                  const val = Number(scoreMatch[2]);
+                  setEngineLines(prev => ({
+                    ...prev,
+                    [multipv]: {
+                      depth,
+                      score: type === "mate" ? `#${val}` : val,
+                      pv: pvMatch[1]
                     }
+                  }));
                 }
-
-                const piece = game.get(sq);
-                if (piece && piece.color === game.turn()) setSelectedSquare(sq);
-                else setSelectedSquare(null);
+              }
             };
 
-            const normalizedLines = useMemo(() => {
-                const turn = game.turn();
-                const moveNum = parseInt(fen.split(' ')[5]);
-                
-                return Object.values(engineLines)
-                    .sort((a, b) => {
-                        const getVal = (l) => typeof l.score === 'string' ? (l.score.includes('-') ? -9999 : 9999) : l.score;
-                        return turn === 'w' ? getVal(b) - getVal(a) : getVal(a) - getVal(b);
-                    })
-                    .map((line, idx) => {
-                        const isMate = line.score.toString().startsWith('#');
-                        const val = isMate ? parseInt(line.score.substring(1)) : parseInt(line.score);
-                        let wScore = turn === 'w' ? val : -val;
-                        let displayScore = isMate ? `#${wScore}` : (wScore / 100 > 0 ? '+' : '') + (wScore / 100).toFixed(2);
-                        
-                        const temp = new Chess(fen);
-                        const uciMoves = line.pv.split(' ');
-                        const sanMoves = [];
-                        let curNum = moveNum, curTurn = turn;
-
-                        for (let i = 0; i < uciMoves.length && i < 8; i++) {
-                            try {
-                                const m = temp.move({ from: uciMoves[i].substring(0,2), to: uciMoves[i].substring(2,4), promotion: 'q' });
-                                if (!m) break;
-                                if (curTurn === 'w') { sanMoves.push(`${curNum}. ${m.san}`); curTurn = 'b'; }
-                                else { sanMoves.push(i === 0 ? `${curNum}... ${m.san}` : m.san); curTurn = 'w'; curNum++; }
-                            } catch(e) { break; }
-                        }
-                        return { ...line, multipv: idx + 1, displayScore, sanPV: sanMoves.join(' '), whiteScore: wScore };
-                    });
-            }, [engineLines, fen, game]);
-
-            const evalPct = useMemo(() => {
-                if (normalizedLines.length === 0) return 50;
-                const score = normalizedLines[0].whiteScore;
-                return Math.max(5, Math.min(95, 50 - (score / 100 * 5)));
-            }, [normalizedLines]);
-
-            const renderBoard = () => {
-                const ranks = orientation === 'w' ? [8,7,6,5,4,3,2,1] : [1,2,3,4,5,6,7,8];
-                const files = orientation === 'w' ? ['a','b','c','d','e','f','g','h'] : ['h','g','f','e','d','c','b','a'];
-                
-                return ranks.flatMap(r => files.map(f => {
-                    const sq = `${f}${r}`;
-                    const piece = game.get(sq);
-                    const isDark = (ranks.indexOf(r) + files.indexOf(f)) % 2 === 1;
-                    const isLM = lastMove && (lastMove.from === sq || lastMove.to === sq);
-                    const isSel = selectedSquare === sq;
-
-                    return (
-                        <div 
-                            key={sq} onClick={() => handleSquareClick(sq)}
-                            className="relative flex items-center justify-center cursor-pointer no-select aspect-square"
-                            style={{ backgroundColor: isDark ? theme.dark : theme.light }}
-                        >
-                            {isLM && <div className="absolute inset-0" style={{ backgroundColor: theme.lastMove }} />}
-                            {isSel && <div className="absolute inset-0" style={{ backgroundColor: theme.highlight }} />}
-                            {f === files[0] && <span className={`absolute top-0.5 left-0.5 text-[10px] font-bold opacity-30 ${isDark ? 'text-white' : 'text-black'}`}>{r}</span>}
-                            {r === ranks[ranks.length-1] && <span className={`absolute bottom-0.5 right-0.5 text-[10px] font-bold opacity-30 ${isDark ? 'text-white' : 'text-black'}`}>{f}</span>}
-                            {piece && <Piece type={piece.type} color={piece.color} />}
-                        </div>
-                    );
-                }));
+            worker.onerror = () => {
+              setEngineStatus({ ok: false, text: "Engine crashed / load error" });
             };
 
-            const formatClock = (s) => `${Math.floor(s/60)}:${(s%60).toString().padStart(2, '0')}`;
+            worker.postMessage("uci");
+            worker.postMessage("setoption name MultiPV value 3");
+            worker.postMessage("setoption name Threads value 2");
+            worker.postMessage("setoption name Hash value 128");
+            worker.postMessage("isready");
+          } catch (e) {
+            if (cancelled) return;
+            setEngineStatus({ ok: false, text: "Engine failed to load. Use local engine file." });
 
-            return (
-                <div className="h-screen w-screen bg-[#262421] text-slate-200 flex overflow-hidden font-sans">
-                    
-                    {/* МОДАЛЬНОЕ ОКНО ВРЕМЕНИ */}
-                    {showTimeModal && (
-                        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-                            <div className="bg-[#262421] w-full max-w-md rounded-2xl shadow-2xl border border-white/10 animate-modal overflow-hidden">
-                                <div className="flex justify-between items-center p-5 border-b border-white/5">
-                                    <h2 className="text-xl font-bold tracking-tight">Новая партия</h2>
-                                    <button onClick={() => setShowTimeModal(false)} className="text-slate-400 hover:text-white text-2xl">×</button>
-                                </div>
-                                <div className="p-5 max-h-[70vh] overflow-y-auto custom-scrollbar">
-                                    {TIME_CONTROLS.map(cat => (
-                                        <div key={cat.category} className="mb-8 last:mb-0">
-                                            <div className="flex items-center gap-2 mb-4 text-slate-400 font-bold uppercase text-xs tracking-widest">
-                                                <span>{cat.icon}</span>
-                                                <span>{cat.category}</span>
-                                            </div>
-                                            <div className="grid grid-cols-2 gap-3">
-                                                {cat.presets.map(p => (
-                                                    <button 
-                                                        key={p.label}
-                                                        onClick={() => {
-                                                            setSelectedTime(p);
-                                                            setWhiteTime(p.minutes * 60);
-                                                            setBlackTime(p.minutes * 60);
-                                                            setShowTimeModal(false);
-                                                            setIsGameOver(false);
-                                                            const freshGame = new Chess();
-                                                            setGame(freshGame);
-                                                            setFen(freshGame.fen());
-                                                            setLastMove(null);
-                                                        }}
-                                                        className={`py-4 rounded-xl font-bold text-lg transition-all border ${selectedTime.label === p.label ? 'bg-[#81b64c] border-[#81b64c] text-white' : 'bg-[#312e2b] border-white/5 hover:bg-[#3d3b37] text-slate-200'}`}
-                                                    >
-                                                        {p.label}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Боковое меню */}
-                    <div className="hidden md:flex flex-col w-[80px] bg-[#21201d] border-r border-white/5 items-center py-6 gap-8">
-                        <div className="w-12 h-12 bg-[#81b64c] rounded-lg flex items-center justify-center cursor-pointer shadow-lg text-white font-bold text-2xl">C</div>
-                        <div onClick={() => setSidebarTab('play')} className={`p-3 rounded-xl cursor-pointer transition ${sidebarTab === 'play' ? 'bg-[#312e2b] text-white' : 'text-slate-500'}`}>▶</div>
-                        <div onClick={() => setSidebarTab('analysis')} className={`p-3 rounded-xl cursor-pointer transition ${sidebarTab === 'analysis' ? 'bg-[#312e2b] text-white' : 'text-slate-500'}`}>🔍</div>
-                        <div className="mt-auto p-3 text-slate-500 cursor-pointer transition text-xl">⚙</div>
-                    </div>
-
-                    {/* Игровая зона */}
-                    <div className="flex-1 flex flex-col md:flex-row items-center justify-center p-4 bg-[#312e2b] gap-6 relative">
-                        <div className="hidden lg:flex w-8 h-[min(80vh,600px)] bg-[#21201d] rounded overflow-hidden border border-white/10 relative">
-                            <div className="w-full bg-[#eeeeee] transition-all duration-700 absolute bottom-0 shadow-inner" style={{ height: `${100 - evalPct}%` }} />
-                        </div>
-
-                        <div className="flex flex-col gap-2 w-full max-w-[min(80vh,600px)]">
-                            <div className="flex justify-between items-center bg-[#262421]/60 p-3 rounded-t-lg">
-                                <div className="flex items-center gap-3">
-                                    <div className="w-10 h-10 bg-[#21201d] rounded border border-white/5 flex items-center justify-center text-slate-500 text-xl">💻</div>
-                                    <div className="text-sm font-bold">Движок (Ур. {level})</div>
-                                </div>
-                                <div className={`px-4 py-2 rounded font-mono text-xl font-bold border border-white/5 shadow-inner transition-colors ${game.turn() !== userColor ? 'bg-white text-black' : 'bg-[#21201d] text-slate-500'}`}>
-                                    {formatClock(orientation === 'w' ? blackTime : whiteTime)}
-                                </div>
-                            </div>
-
-                            <div className="aspect-square bg-[#262421] shadow-2xl relative overflow-hidden ring-4 ring-[#262421]">
-                                <div className="grid grid-cols-8 grid-rows-8 h-full w-full">{renderBoard()}</div>
-                                {isGameOver && (
-                                    <div className="absolute inset-0 bg-black/80 z-20 flex flex-col items-center justify-center text-center backdrop-blur-md p-6">
-                                        <div className="text-6xl mb-4">🏆</div>
-                                        <h3 className="text-3xl font-bold mb-2">Партия окончена</h3>
-                                        <p className="text-slate-400 mb-6">{whiteTime <= 0 || blackTime <= 0 ? 'Время истекло' : 'Мат или пат'}</p>
-                                        <button onClick={() => setShowTimeModal(true)} className="bg-[#81b64c] hover:bg-[#91c65c] text-white px-10 py-3 rounded-xl font-bold shadow-lg transition active:scale-95">Новая партия</button>
-                                    </div>
-                                )}
-                            </div>
-
-                            <div className="flex justify-between items-center bg-[#262421]/60 p-3 rounded-b-lg">
-                                <div className="flex items-center gap-3">
-                                    <div className="w-10 h-10 bg-[#81b64c]/20 rounded border border-[#81b64c]/20 flex items-center justify-center text-[#81b64c] text-xl">👤</div>
-                                    <div className="text-sm font-bold">Вы (Игрок)</div>
-                                </div>
-                                <div className={`px-4 py-2 rounded font-mono text-xl font-bold border border-white/5 shadow-inner transition-colors ${game.turn() === userColor ? 'bg-white text-black' : 'bg-[#21201d] text-slate-500'}`}>
-                                    {formatClock(orientation === 'w' ? whiteTime : blackTime)}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Сайдбар */}
-                    <div className="hidden md:flex flex-col w-[400px] bg-[#262421] shadow-2xl border-l border-white/5">
-                        <div className="flex bg-[#21201d] p-1 border-b border-white/5">
-                            <button onClick={() => setSidebarTab('play')} className={`flex-1 py-4 text-xs font-black transition tracking-widest ${sidebarTab === 'play' ? 'bg-[#312e2b] text-white' : 'text-slate-500'}`}>ИГРАТЬ</button>
-                            <button onClick={() => setSidebarTab('analysis')} className={`flex-1 py-4 text-xs font-black transition tracking-widest ${sidebarTab === 'analysis' ? 'bg-[#312e2b] text-white' : 'text-slate-500'}`}>АНАЛИЗ</button>
-                        </div>
-
-                        <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-6 custom-scrollbar">
-                            {sidebarTab === 'play' ? (
-                                <div className="flex flex-col gap-6 animate-in slide-in-from-right duration-300">
-                                    <div className="bg-[#312e2b] rounded-2xl p-6 shadow-2xl border border-white/5">
-                                        
-                                        {/* ВЫБОР ДВИЖКА */}
-                                        <div className="mb-6">
-                                            <span className="text-xs font-bold text-slate-500 uppercase tracking-widest block mb-2">Выбор движка</span>
-                                            <div className="relative">
-                                                <select 
-                                                    value={engineKey} 
-                                                    onChange={(e) => setEngineKey(e.target.value)}
-                                                    className="w-full bg-[#454240] px-5 py-3 rounded-xl text-sm font-bold text-white outline-none cursor-pointer border border-white/10 hover:bg-[#504d4a] transition appearance-none"
-                                                >
-                                                    {Object.keys(ENGINES).map(key => (
-                                                        <option key={key} value={key}>{ENGINES[key].name}</option>
-                                                    ))}
-                                                </select>
-                                                <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">▼</div>
-                                            </div>
-                                        </div>
-
-                                        <div className="mb-6">
-                                            <span className="text-xs font-bold text-slate-500 uppercase tracking-widest block mb-2">Контроль времени</span>
-                                            <button 
-                                                onClick={() => setShowTimeModal(true)}
-                                                className="w-full bg-[#454240] hover:bg-[#504d4a] p-4 rounded-xl flex items-center justify-between transition group border border-white/5"
-                                            >
-                                                <div className="flex items-center gap-3">
-                                                    <span className="text-xl">⏱️</span>
-                                                    <span className="font-bold text-lg text-white">{selectedTime.label}</span>
-                                                </div>
-                                                <span className="text-slate-500 group-hover:text-slate-300">Изменить →</span>
-                                            </button>
-                                        </div>
-
-                                        <div className="flex items-center justify-between mb-8">
-                                            <span className="text-sm font-bold text-slate-400">Уровень ИИ</span>
-                                            <select value={level} onChange={(e) => setLevel(Number(e.target.value))} className="bg-[#454240] px-5 py-2 rounded-xl text-sm font-bold text-white outline-none cursor-pointer border border-white/10 hover:bg-[#504d4a] transition">
-                                                {Object.keys(LEVEL_CONFIG).map(l => <option key={l} value={l}>{LEVEL_CONFIG[l].label}</option>)}
-                                            </select>
-                                        </div>
-                                        <button onClick={() => { 
-                                            const newG = new Chess();
-                                            setGame(newG); 
-                                            setFen(newG.fen()); 
-                                            setLastMove(null);
-                                            setIsGameOver(false);
-                                            setWhiteTime(selectedTime.minutes * 60);
-                                            setBlackTime(selectedTime.minutes * 60);
-                                        }} className="w-full bg-[#81b64c] hover:bg-[#91c65c] text-white py-5 rounded-2xl font-black text-2xl uppercase tracking-wider shadow-lg active:scale-95 transition">ИГРАТЬ</button>
-                                    </div>
-                                    <div className="bg-[#312e2b] rounded-2xl p-4 border border-white/5 shadow-inner min-h-[200px]">
-                                        <div className="text-[11px] font-black uppercase text-slate-500 mb-4 tracking-widest">История ходов</div>
-                                        <div className="p-2 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-xs max-h-[300px] overflow-y-auto custom-scrollbar">
-                                            {game.history().map((m, i) => (
-                                                <div key={i} className="flex gap-2 p-1 border-b border-white/5 hover:bg-white/5 transition">
-                                                    <span className="text-slate-600 w-4">{i % 2 === 0 ? Math.floor(i/2) + 1 + '.' : ''}</span>
-                                                    <span className="text-white font-bold">{m}</span>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </div>
-                                </div>
-                            ) : (
-                                <div className="flex flex-col gap-6 animate-in slide-in-from-right duration-300">
-                                    <div className="bg-[#312e2b] rounded-2xl overflow-hidden shadow-2xl border border-white/5">
-                                        <div className="bg-[#2d2b28] px-5 py-3 border-b border-white/5 text-[10px] font-black text-blue-400 tracking-widest flex justify-between items-center">
-                                            <span>{ENGINES[engineKey].name}</span>
-                                            <span className="text-slate-500 font-mono">MULTI-PV: 3</span>
-                                        </div>
-                                        <div className="bg-black/10">
-                                            {normalizedLines.length > 0 ? normalizedLines.map(line => (
-                                                <div key={line.multipv} className="p-4 flex items-center gap-4 border-b border-white/5 last:border-0 transition-colors hover:bg-white/5">
-                                                    <div className="flex flex-col gap-1 w-full">
-                                                        <div className="flex justify-between items-center">
-                                                            <span className="text-[10px] font-black text-slate-600">ЛИНИЯ #{line.multipv}</span>
-                                                            <span className={`text-xs font-mono font-black ${typeof line.whiteScore === 'number' && line.whiteScore < 0 ? 'text-red-400' : 'text-green-400'}`}>
-                                                                {line.displayScore}
-                                                            </span>
-                                                        </div>
-                                                        <div className="text-[11px] font-mono text-slate-300 leading-relaxed break-words">
-                                                            {line.sanPV}
-                                                        </div>
-                                                        <div className="text-[9px] font-mono text-slate-600 uppercase">Глубина: {line.depth}</div>
-                                                    </div>
-                                                </div>
-                                            )) : (
-                                                <div className="p-10 text-center text-slate-600 text-[10px] uppercase font-bold tracking-widest italic animate-pulse">
-                                                    Идет расчет вариантов...
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-                                    
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <button onClick={() => { game.undo(); setFen(game.fen()); setLastMove(null); }} className="bg-[#312e2b] py-4 rounded-xl font-bold text-[10px] uppercase tracking-widest hover:bg-[#3d3b37] border border-white/10 transition active:scale-95 shadow-lg">Шаг назад</button>
-                                        <button onClick={() => setOrientation(o => o === 'w' ? 'b' : 'w')} className="bg-[#312e2b] py-4 rounded-xl font-bold text-[10px] uppercase tracking-widest hover:bg-[#3d3b37] border border-white/10 transition active:scale-95 shadow-lg">Поворот</button>
-                                    </div>
-
-                                    <div className="bg-[#312e2b] p-6 rounded-2xl shadow-xl border border-white/5">
-                                        <span className="text-[11px] font-black text-slate-500 uppercase mb-4 block tracking-widest">Тема доски</span>
-                                        <div className="grid grid-cols-4 gap-3">
-                                            {Object.keys(THEMES).map(t => (
-                                                <div key={t} onClick={() => setThemeName(t)} className={`aspect-square rounded-xl cursor-pointer border-2 transition-all transform hover:scale-105 ${themeName === t ? 'border-[#81b64c] shadow-lg ring-2 ring-[#81b64c]/20' : 'border-transparent opacity-40 hover:opacity-100'}`} style={{ background: `linear-gradient(135deg, ${THEMES[t].light} 50%, ${THEMES[t].dark} 50%)` }} title={THEMES[t].name} />
-                                            ))}
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                </div>
-            );
+            // Авто-fallback: если local не нашёлся — попробуем cdn_sf10
+            if (engineKey === "local_sf10") {
+              setEngineKey("cdn_sf10");
+            }
+          }
         }
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
-    </script>
+        initEngine();
+        return () => {
+          cancelled = true;
+          if (workerRef.current) {
+            try { workerRef.current.terminate(); } catch {}
+            workerRef.current = null;
+          }
+        };
+      }, [engineKey]);
+
+      // --- START/STOP ANALYSIS ---
+      useEffect(() => {
+        const w = workerRef.current;
+        if (!w || isGameOver) return;
+
+        // всегда стоп перед новым go, чтобы не было "вечной думалки" и гонок
+        setEngineLines({});
+        try {
+          w.postMessage("stop");
+          w.postMessage(`position fen ${fen}`);
+          const targetDepth = sidebarTab === "play" ? LEVEL_CONFIG[level].depth : 18;
+          w.postMessage(`go depth ${targetDepth}`);
+        } catch {}
+      }, [fen, sidebarTab, level, isGameOver]);
+
+      // --- CLOCKS ---
+      useEffect(() => {
+        if (timerRef.current) clearInterval(timerRef.current);
+
+        if (sidebarTab === "play" && !isGameOver && game.history().length > 0) {
+          timerRef.current = setInterval(() => {
+            if (game.turn() === "w") {
+              setWhiteTime(t => {
+                if (t <= 1) { setIsGameOver(true); return 0; }
+                return t - 1;
+              });
+            } else {
+              setBlackTime(t => {
+                if (t <= 1) { setIsGameOver(true); return 0; }
+                return t - 1;
+              });
+            }
+          }, 1000);
+        }
+
+        return () => {
+          if (timerRef.current) clearInterval(timerRef.current);
+        };
+      }, [game, sidebarTab, isGameOver]);
+
+      function applyIncrementToSide(side) {
+        const inc = Number(selectedTime.increment || 0);
+        if (!inc) return;
+        if (side === "w") setWhiteTime(t => t + inc);
+        else setBlackTime(t => t + inc);
+      }
+
+      function handleEngineMove(uci) {
+        const delay = LEVEL_CONFIG[level].delay;
+
+        setTimeout(() => {
+          setGame(prev => {
+            if (sidebarTab !== "play" || isGameOver) return prev;
+            if (prev.turn() === userColor) return prev; // ход игрока — движок не ходит
+
+            const copy = new Chess(prev.fen());
+            try {
+              const moveObj = {
+                from: uci.slice(0,2),
+                to: uci.slice(2,4),
+                promotion: uci.length === 5 ? uci[4] : "q"
+              };
+              const m = copy.move(moveObj);
+              if (!m) return prev;
+
+              // инкремент стороне, которая сделала ход (движок сейчас ходил за copy.turn() ДО хода)
+              // До хода turn() был цвет движка:
+              applyIncrementToSide(prev.turn());
+
+              setFen(copy.fen());
+              setLastMove({ from: m.from, to: m.to });
+              setSelectedSquare(null);
+              return copy;
+            } catch {
+              return prev;
+            }
+          });
+        }, delay);
+      }
+
+      function resetGameWithTime(preset) {
+        const p = preset || selectedTime;
+        const fresh = new Chess();
+        setGame(fresh);
+        setFen(fresh.fen());
+        setLastMove(null);
+        setSelectedSquare(null);
+        setIsGameOver(false);
+        setEngineLines({});
+
+        const base = Number(p.minutes || 10) * 60;
+        setWhiteTime(base);
+        setBlackTime(base);
+      }
+
+      function handleSquareClick(sq) {
+        if (isGameOver) return;
+        if (sidebarTab === "play" && game.turn() !== userColor) return;
+
+        if (selectedSquare === sq) {
+          setSelectedSquare(null);
+          return;
+        }
+
+        if (selectedSquare) {
+          try {
+            const moverSide = game.turn(); // сторона, которая делает ход сейчас
+            const m = game.move({ from: selectedSquare, to: sq, promotion: "q" });
+            if (m) {
+              applyIncrementToSide(moverSide);
+              setFen(game.fen());
+              setLastMove({ from: m.from, to: m.to });
+              setSelectedSquare(null);
+              return;
+            }
+          } catch {}
+        }
+
+        const piece = game.get(sq);
+        if (piece && piece.color === game.turn()) setSelectedSquare(sq);
+        else setSelectedSquare(null);
+      }
+
+      const normalizedLines = useMemo(() => {
+        const turn = game.turn();
+        const moveNum = Number(fen.split(" ")[5] || 1);
+
+        return Object.keys(engineLines)
+          .map(k => ({ multipv: Number(k), ...engineLines[k] }))
+          .sort((a,b) => a.multipv - b.multipv)
+          .slice(0,3)
+          .map(line => {
+            const isMate = String(line.score).startsWith("#");
+            const val = isMate ? Number(String(line.score).slice(1)) : Number(line.score);
+            const wScore = turn === "w" ? val : -val;
+            const displayScore = isMate ? `#${wScore}` : ((wScore/100) > 0 ? "+" : "") + (wScore/100).toFixed(2);
+
+            const temp = new Chess(fen);
+            const uciMoves = String(line.pv || "").split(" ").filter(Boolean);
+            const san = [];
+            let curNum = moveNum;
+            let curTurn = turn;
+
+            for (let i=0; i<uciMoves.length && i<8; i++) {
+              const u = uciMoves[i];
+              try {
+                const m = temp.move({ from: u.slice(0,2), to: u.slice(2,4), promotion: "q" });
+                if (!m) break;
+                if (curTurn === "w") { san.push(`${curNum}. ${m.san}`); curTurn = "b"; }
+                else { san.push(i === 0 ? `${curNum}... ${m.san}` : m.san); curTurn = "w"; curNum++; }
+              } catch { break; }
+            }
+
+            return { ...line, whiteScore: wScore, displayScore, sanPV: san.join(" ") };
+          });
+      }, [engineLines, fen, game]);
+
+      const evalPct = useMemo(() => {
+        if (!normalizedLines[0]) return 50;
+        const score = Number(normalizedLines[0].whiteScore || 0);
+        return Math.max(5, Math.min(95, 50 - (score/100)*5));
+      }, [normalizedLines]);
+
+      function formatClock(s) {
+        const m = Math.floor(s/60);
+        const sec = s % 60;
+        return `${m}:${String(sec).padStart(2,"0")}`;
+      }
+
+      function renderBoard() {
+        const ranks = orientation === "w" ? [8,7,6,5,4,3,2,1] : [1,2,3,4,5,6,7,8];
+        const files = orientation === "w" ? ["a","b","c","d","e","f","g","h"] : ["h","g","f","e","d","c","b","a"];
+
+        return ranks.flatMap((r, ri) => files.map((f, fi) => {
+          const sq = `${f}${r}`;
+          const piece = game.get(sq);
+          const isDark = (ri + fi) % 2 === 1;
+          const isLM = lastMove && (lastMove.from === sq || lastMove.to === sq);
+          const isSel = selectedSquare === sq;
+
+          return (
+            <div
+              key={sq}
+              onClick={() => handleSquareClick(sq)}
+              className="relative flex items-center justify-center cursor-pointer no-select aspect-square"
+              style={{ backgroundColor: isDark ? theme.dark : theme.light }}
+            >
+              {isLM && <div className="absolute inset-0" style={{ backgroundColor: theme.lastMove }} />}
+              {isSel && <div className="absolute inset-0" style={{ backgroundColor: theme.highlight }} />}
+
+              {f === files[0] && (
+                <span className={`absolute top-0.5 left-0.5 text-[10px] font-bold opacity-30 ${isDark ? "text-white" : "text-black"}`}>
+                  {r}
+                </span>
+              )}
+              {r === ranks[ranks.length-1] && (
+                <span className={`absolute bottom-0.5 right-0.5 text-[10px] font-bold opacity-30 ${isDark ? "text-white" : "text-black"}`}>
+                  {f}
+                </span>
+              )}
+
+              {piece && <Piece type={piece.type} color={piece.color} />}
+            </div>
+          );
+        }));
+      }
+
+      return (
+        <div className="h-screen w-screen bg-[#262421] text-slate-200 flex overflow-hidden">
+
+          {/* MODAL TIME */}
+          {showTimeModal && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+              <div className="bg-[#262421] w-full max-w-md rounded-2xl shadow-2xl border border-white/10 overflow-hidden">
+                <div className="flex justify-between items-center p-5 border-b border-white/5">
+                  <h2 className="text-xl font-bold tracking-tight">Новая партия</h2>
+                  <button onClick={() => setShowTimeModal(false)} className="text-slate-400 hover:text-white text-2xl">×</button>
+                </div>
+                <div className="p-5 max-h-[70vh] overflow-y-auto custom-scrollbar">
+                  {TIME_CONTROLS.map(cat => (
+                    <div key={cat.category} className="mb-8 last:mb-0">
+                      <div className="flex items-center gap-2 mb-4 text-slate-400 font-bold uppercase text-xs tracking-widest">
+                        <span>{cat.icon}</span><span>{cat.category}</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        {cat.presets.map(p => (
+                          <button
+                            key={p.label}
+                            onClick={() => {
+                              setSelectedTime(p);
+                              setShowTimeModal(false);
+                              resetGameWithTime(p);
+                            }}
+                            className={`py-4 rounded-xl font-bold text-lg transition-all border ${
+                              selectedTime.label === p.label
+                                ? "bg-[#81b64c] border-[#81b64c] text-white"
+                                : "bg-[#312e2b] border-white/5 hover:bg-[#3d3b37] text-slate-200"
+                            }`}
+                          >
+                            {p.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* LEFT NAV */}
+          <div className="hidden md:flex flex-col w-[80px] bg-[#21201d] border-r border-white/5 items-center py-6 gap-8">
+            <div className="w-12 h-12 bg-[#81b64c] rounded-lg flex items-center justify-center shadow-lg text-white font-black text-2xl">C</div>
+            <div onClick={() => setSidebarTab("play")} className={`p-3 rounded-xl cursor-pointer ${sidebarTab==="play" ? "bg-[#312e2b] text-white" : "text-slate-500"}`}>▶</div>
+            <div onClick={() => setSidebarTab("analysis")} className={`p-3 rounded-xl cursor-pointer ${sidebarTab==="analysis" ? "bg-[#312e2b] text-white" : "text-slate-500"}`}>🔍</div>
+            <div className="mt-auto p-3 text-slate-500 text-xl">⚙</div>
+          </div>
+
+          {/* CENTER */}
+          <div className="flex-1 flex flex-col md:flex-row items-center justify-center p-4 bg-[#312e2b] gap-6 relative">
+            <div className="hidden lg:flex w-8 h-[min(80vh,600px)] bg-[#21201d] rounded overflow-hidden border border-white/10 relative">
+              <div className="w-full bg-[#eeeeee] transition-all duration-500 absolute bottom-0 shadow-inner" style={{ height: `${100 - evalPct}%` }} />
+            </div>
+
+            <div className="flex flex-col gap-2 w-full max-w-[min(80vh,600px)]">
+              <div className="flex justify-between items-center bg-[#262421]/60 p-3 rounded-t-lg">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-[#21201d] rounded border border-white/5 flex items-center justify-center text-slate-500 text-xl">💻</div>
+                  <div className="text-sm font-bold">
+                    Движок (ур. {level})
+                    <div className={`text-[10px] font-mono ${engineStatus.ok ? "text-slate-400" : "text-red-400"}`}>
+                      {engineStatus.text}
+                    </div>
+                  </div>
+                </div>
+                <div className={`px-4 py-2 rounded font-mono text-xl font-bold border border-white/5 shadow-inner ${game.turn() !== userColor ? "bg-white text-black" : "bg-[#21201d] text-slate-500"}`}>
+                  {formatClock(orientation === "w" ? blackTime : whiteTime)}
+                </div>
+              </div>
+
+              <div className="aspect-square bg-[#262421] shadow-2xl relative overflow-hidden ring-4 ring-[#262421]">
+                <div className="grid grid-cols-8 grid-rows-8 h-full w-full">{renderBoard()}</div>
+                {isGameOver && (
+                  <div className="absolute inset-0 bg-black/80 z-20 flex flex-col items-center justify-center text-center backdrop-blur-md p-6">
+                    <div className="text-6xl mb-4">🏆</div>
+                    <h3 className="text-3xl font-bold mb-2">Партия окончена</h3>
+                    <p className="text-slate-400 mb-6">{whiteTime <= 0 || blackTime <= 0 ? "Время истекло" : "Мат / пат"}</p>
+                    <button onClick={() => setShowTimeModal(true)} className="bg-[#81b64c] hover:bg-[#91c65c] text-white px-10 py-3 rounded-xl font-bold shadow-lg active:scale-95 transition">
+                      Новая партия
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-between items-center bg-[#262421]/60 p-3 rounded-b-lg">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-[#81b64c]/20 rounded border border-[#81b64c]/20 flex items-center justify-center text-[#81b64c] text-xl">👤</div>
+                  <div className="text-sm font-bold">Вы (Игрок)</div>
+                </div>
+                <div className={`px-4 py-2 rounded font-mono text-xl font-bold border border-white/5 shadow-inner ${game.turn() === userColor ? "bg-white text-black" : "bg-[#21201d] text-slate-500"}`}>
+                  {formatClock(orientation === "w" ? whiteTime : blackTime)}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* RIGHT SIDEBAR */}
+          <div className="hidden md:flex flex-col w-[420px] bg-[#262421] shadow-2xl border-l border-white/5">
+            <div className="flex bg-[#21201d] p-1 border-b border-white/5">
+              <button onClick={() => setSidebarTab("play")} className={`flex-1 py-4 text-xs font-black tracking-widest ${sidebarTab==="play" ? "bg-[#312e2b] text-white" : "text-slate-500"}`}>ИГРАТЬ</button>
+              <button onClick={() => setSidebarTab("analysis")} className={`flex-1 py-4 text-xs font-black tracking-widest ${sidebarTab==="analysis" ? "bg-[#312e2b] text-white" : "text-slate-500"}`}>АНАЛИЗ</button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-6 custom-scrollbar">
+              {sidebarTab === "play" ? (
+                <div className="flex flex-col gap-6">
+                  <div className="bg-[#312e2b] rounded-2xl p-6 shadow-2xl border border-white/5">
+                    {/* ENGINE SELECT */}
+                    <div className="mb-6">
+                      <span className="text-xs font-bold text-slate-500 uppercase tracking-widest block mb-2">Выбор движка</span>
+                      <select
+                        value={engineKey}
+                        onChange={(e) => setEngineKey(e.target.value)}
+                        className="w-full bg-[#454240] px-5 py-3 rounded-xl text-sm font-bold text-white outline-none cursor-pointer border border-white/10 hover:bg-[#504d4a] transition"
+                      >
+                        {Object.keys(ENGINES).map(k => <option key={k} value={k}>{ENGINES[k].name}</option>)}
+                      </select>
+                      {!engineStatus.ok && (
+                        <div className="mt-2 text-[11px] text-red-400">
+                          Совет: добавь локальный файл движка в репозиторий: <span className="font-mono">/engines/stockfish10.js</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* TIME */}
+                    <div className="mb-6">
+                      <span className="text-xs font-bold text-slate-500 uppercase tracking-widest block mb-2">Контроль времени</span>
+                      <button
+                        onClick={() => setShowTimeModal(true)}
+                        className="w-full bg-[#454240] hover:bg-[#504d4a] p-4 rounded-xl flex items-center justify-between transition border border-white/5"
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="text-xl">⏱️</span>
+                          <span className="font-bold text-lg text-white">{selectedTime.label}</span>
+                        </div>
+                        <span className="text-slate-400">Изменить →</span>
+                      </button>
+                    </div>
+
+                    {/* LEVEL */}
+                    <div className="flex items-center justify-between mb-8">
+                      <span className="text-sm font-bold text-slate-400">Уровень ИИ</span>
+                      <select
+                        value={level}
+                        onChange={(e) => setLevel(Number(e.target.value))}
+                        className="bg-[#454240] px-5 py-2 rounded-xl text-sm font-bold text-white outline-none cursor-pointer border border-white/10 hover:bg-[#504d4a] transition"
+                      >
+                        {Object.keys(LEVEL_CONFIG).map(l => <option key={l} value={l}>{LEVEL_CONFIG[l].label}</option>)}
+                      </select>
+                    </div>
+
+                    <button
+                      onClick={() => resetGameWithTime()}
+                      className="w-full bg-[#81b64c] hover:bg-[#91c65c] text-white py-5 rounded-2xl font-black text-2xl uppercase tracking-wider shadow-lg active:scale-95 transition"
+                    >
+                      ИГРАТЬ
+                    </button>
+                  </div>
+
+                  <div className="bg-[#312e2b] rounded-2xl p-4 border border-white/5 shadow-inner min-h-[200px]">
+                    <div className="text-[11px] font-black uppercase text-slate-500 mb-4 tracking-widest">История ходов</div>
+                    <div className="p-2 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-xs max-h-[300px] overflow-y-auto custom-scrollbar">
+                      {game.history().map((m, i) => (
+                        <div key={i} className="flex gap-2 p-1 border-b border-white/5 hover:bg-white/5 transition">
+                          <span className="text-slate-600 w-4">{i % 2 === 0 ? Math.floor(i/2) + 1 + "." : ""}</span>
+                          <span className="text-white font-bold">{m}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-6">
+                  <div className="bg-[#312e2b] rounded-2xl overflow-hidden shadow-2xl border border-white/5">
+                    <div className="bg-[#2d2b28] px-5 py-3 border-b border-white/5 text-[10px] font-black text-blue-400 tracking-widest flex justify-between items-center">
+                      <span>ANALYSIS</span>
+                      <span className="text-slate-500 font-mono">MultiPV: 3</span>
+                    </div>
+
+                    <div className="bg-black/10">
+                      {normalizedLines.length ? normalizedLines.map(line => (
+                        <div key={line.multipv} className="p-4 border-b border-white/5 last:border-0 hover:bg-white/5 transition">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="text-[10px] font-black text-slate-600">ЛИНИЯ #{line.multipv}</span>
+                            <span className={`text-xs font-mono font-black ${line.whiteScore < 0 ? "text-red-400" : "text-green-400"}`}>
+                              {line.displayScore}
+                            </span>
+                          </div>
+                          <div className="text-[11px] font-mono text-slate-300 leading-relaxed break-words">{line.sanPV}</div>
+                          <div className="text-[9px] font-mono text-slate-600 uppercase mt-1">Глубина: {line.depth || 0}</div>
+                        </div>
+                      )) : (
+                        <div className="p-10 text-center text-slate-600 text-[10px] uppercase font-bold tracking-widest italic animate-pulse">
+                          Идет расчет вариантов...
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <button onClick={() => { try { game.undo(); } catch {} setFen(game.fen()); setLastMove(null); }}
+                      className="bg-[#312e2b] py-4 rounded-xl font-bold text-[10px] uppercase tracking-widest hover:bg-[#3d3b37] border border-white/10 transition active:scale-95 shadow-lg">
+                      Шаг назад
+                    </button>
+                    <button onClick={() => setOrientation(o => o === "w" ? "b" : "w")}
+                      className="bg-[#312e2b] py-4 rounded-xl font-bold text-[10px] uppercase tracking-widest hover:bg-[#3d3b37] border border-white/10 transition active:scale-95 shadow-lg">
+                      Поворот
+                    </button>
+                  </div>
+
+                  <div className="bg-[#312e2b] p-6 rounded-2xl shadow-xl border border-white/5">
+                    <span className="text-[11px] font-black text-slate-500 uppercase mb-4 block tracking-widest">Тема доски</span>
+                    <div className="grid grid-cols-4 gap-3">
+                      {Object.keys(THEMES).map(t => (
+                        <div key={t}
+                          onClick={() => setThemeName(t)}
+                          className={`aspect-square rounded-xl cursor-pointer border-2 transition-all transform hover:scale-105 ${
+                            themeName === t ? "border-[#81b64c] shadow-lg ring-2 ring-[#81b64c]/20" : "border-transparent opacity-40 hover:opacity-100"
+                          }`}
+                          style={{ background: `linear-gradient(135deg, ${THEMES[t].light} 50%, ${THEMES[t].dark} 50%)` }}
+                          title={THEMES[t].name}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
 </body>
 </html>
