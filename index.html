@@ -34,13 +34,9 @@
     const Chess = window.Chess;
 
     // ---- ДВИЖКИ ----
-    // РЕКОМЕНДУЮ: положи локальный файл в репо, иначе CDN может умереть.
-    // Создай папку: /engines/ и положи туда stockfish10.js (или stockfish.js)
     const ENGINES = {
       local_sf10: {
         name: "Stockfish (local) — recommended",
-        // пример: ./engines/stockfish10.js
-        // можешь назвать файл просто stockfish.js
         urls: ["./engines/stockfish10.js", "./stockfish.js"]
       },
       cdn_sf10: {
@@ -111,27 +107,20 @@
 
     // ---- WORKER HELPERS ----
     function makeWorkerFromUrl(url) {
-      // важно: importScripts работает внутри DedicatedWorkerGlobalScope
       const blob = new Blob([`importScripts(${JSON.stringify(url)});`], { type: 'application/javascript' });
       const workerUrl = URL.createObjectURL(blob);
       const w = new Worker(workerUrl);
-      // освобождаем blob-url после создания
       URL.revokeObjectURL(workerUrl);
       return w;
     }
 
     async function tryCreateWorker(urls) {
-      // Пробуем по очереди URL. Если один не загрузился — пробуем следующий.
       for (const url of urls) {
         try {
           const w = makeWorkerFromUrl(url);
-          // если importScripts не смог загрузить — обычно будет ошибка в worker
-          // Подстрахуемся таймаутом готовности.
           await new Promise((resolve, reject) => {
             let ok = false;
-            const t = setTimeout(() => {
-              if (!ok) reject(new Error("Worker init timeout"));
-            }, 2000);
+            const t = setTimeout(() => { if (!ok) reject(new Error("Worker init timeout")); }, 2000);
 
             w.onmessage = (e) => {
               const msg = String(e.data || "");
@@ -152,9 +141,7 @@
           });
 
           return { worker: w, url };
-        } catch (e) {
-          // следующая попытка
-        }
+        } catch (e) {}
       }
       throw new Error("All engine URLs failed");
     }
@@ -164,7 +151,7 @@
       const [fen, setFen] = useState(() => game.fen());
       const [orientation, setOrientation] = useState('w');
       const [sidebarTab, setSidebarTab] = useState('analysis'); // 'play' | 'analysis'
-      const [userColor] = useState('w'); // оставил как было (можно расширить)
+      const [userColor] = useState('w');
       const [level, setLevel] = useState(3);
       const [themeName, setThemeName] = useState('classic_wood');
       const theme = THEMES[themeName];
@@ -182,6 +169,58 @@
       const [engineStatus, setEngineStatus] = useState({ ok: true, text: "" });
       const [engineLines, setEngineLines] = useState({}); // {1:{...},2:{...},3:{...}}
 
+      // ---- SOUND SETTINGS ----
+      const [soundOn, setSoundOn] = useState(true);
+      const [soundVol, setSoundVol] = useState(0.75);
+      const soundUnlockedRef = useRef(false);
+
+      // создаём Audio один раз
+      const SFX = useMemo(() => ({
+        move: new Audio("sounds/move.mp3"),
+        capture: new Audio("sounds/capture.mp3"),
+        check: new Audio("sounds/check.mp3"),
+        gameover: new Audio("sounds/gameover.mp3"),
+      }), []);
+
+      // обновляем громкость
+      useEffect(() => {
+        Object.values(SFX).forEach(a => { try { a.volume = soundVol; } catch {} });
+      }, [SFX, soundVol]);
+
+      // разблокировка аудио после первого клика (политика браузера)
+      useEffect(() => {
+        const unlock = async () => {
+          if (soundUnlockedRef.current) return;
+          try {
+            const a = SFX.move;
+            a.volume = 0;
+            a.currentTime = 0;
+            const p = a.play();
+            if (p && typeof p.then === "function") await p;
+            a.pause();
+            a.currentTime = 0;
+            a.volume = soundVol;
+            soundUnlockedRef.current = true;
+          } catch {
+            // нормально: некоторые браузеры всё равно требуют следующий клик
+          }
+        };
+        window.addEventListener("pointerdown", unlock, { once: true });
+        return () => window.removeEventListener("pointerdown", unlock);
+      }, [SFX, soundVol]);
+
+      const playSfx = (key) => {
+        if (!soundOn) return;
+        const a = SFX[key];
+        if (!a) return;
+        try {
+          a.volume = soundVol;
+          a.currentTime = 0;
+          const p = a.play();
+          if (p && typeof p.catch === "function") p.catch(() => {});
+        } catch {}
+      };
+
       const workerRef = useRef(null);
       const timerRef = useRef(null);
       const pendingBestMoveRef = useRef(null);
@@ -195,7 +234,6 @@
           setEngineLines({});
           pendingBestMoveRef.current = null;
 
-          // убиваем старый
           if (workerRef.current) {
             try { workerRef.current.terminate(); } catch {}
             workerRef.current = null;
@@ -251,11 +289,7 @@
           } catch (e) {
             if (cancelled) return;
             setEngineStatus({ ok: false, text: "Engine failed to load. Use local engine file." });
-
-            // Авто-fallback: если local не нашёлся — попробуем cdn_sf10
-            if (engineKey === "local_sf10") {
-              setEngineKey("cdn_sf10");
-            }
+            if (engineKey === "local_sf10") setEngineKey("cdn_sf10");
           }
         }
 
@@ -274,7 +308,6 @@
         const w = workerRef.current;
         if (!w || isGameOver) return;
 
-        // всегда стоп перед новым go, чтобы не было "вечной думалки" и гонок
         setEngineLines({});
         try {
           w.postMessage("stop");
@@ -292,21 +325,19 @@
           timerRef.current = setInterval(() => {
             if (game.turn() === "w") {
               setWhiteTime(t => {
-                if (t <= 1) { setIsGameOver(true); return 0; }
+                if (t <= 1) { setIsGameOver(true); playSfx("gameover"); return 0; }
                 return t - 1;
               });
             } else {
               setBlackTime(t => {
-                if (t <= 1) { setIsGameOver(true); return 0; }
+                if (t <= 1) { setIsGameOver(true); playSfx("gameover"); return 0; }
                 return t - 1;
               });
             }
           }, 1000);
         }
 
-        return () => {
-          if (timerRef.current) clearInterval(timerRef.current);
-        };
+        return () => { if (timerRef.current) clearInterval(timerRef.current); };
       }, [game, sidebarTab, isGameOver]);
 
       function applyIncrementToSide(side) {
@@ -322,7 +353,7 @@
         setTimeout(() => {
           setGame(prev => {
             if (sidebarTab !== "play" || isGameOver) return prev;
-            if (prev.turn() === userColor) return prev; // ход игрока — движок не ходит
+            if (prev.turn() === userColor) return prev;
 
             const copy = new Chess(prev.fen());
             try {
@@ -334,13 +365,24 @@
               const m = copy.move(moveObj);
               if (!m) return prev;
 
-              // инкремент стороне, которая сделала ход (движок сейчас ходил за copy.turn() ДО хода)
-              // До хода turn() был цвет движка:
+              // SFX
+              if (m.captured) playSfx("capture");
+              else playSfx("move");
+
               applyIncrementToSide(prev.turn());
 
               setFen(copy.fen());
               setLastMove({ from: m.from, to: m.to });
               setSelectedSquare(null);
+
+              try { if (copy.in_check()) playSfx("check"); } catch {}
+              try {
+                if (copy.game_over()) {
+                  setIsGameOver(true);
+                  playSfx("gameover");
+                }
+              } catch {}
+
               return copy;
             } catch {
               return prev;
@@ -375,13 +417,26 @@
 
         if (selectedSquare) {
           try {
-            const moverSide = game.turn(); // сторона, которая делает ход сейчас
+            const moverSide = game.turn();
             const m = game.move({ from: selectedSquare, to: sq, promotion: "q" });
             if (m) {
+              // SFX
+              if (m.captured) playSfx("capture");
+              else playSfx("move");
+
               applyIncrementToSide(moverSide);
               setFen(game.fen());
               setLastMove({ from: m.from, to: m.to });
               setSelectedSquare(null);
+
+              try { if (game.in_check()) playSfx("check"); } catch {}
+              try {
+                if (game.game_over()) {
+                  setIsGameOver(true);
+                  playSfx("gameover");
+                }
+              } catch {}
+
               return;
             }
           } catch {}
@@ -619,7 +674,7 @@
                     </div>
 
                     {/* LEVEL */}
-                    <div className="flex items-center justify-between mb-8">
+                    <div className="flex items-center justify-between mb-4">
                       <span className="text-sm font-bold text-slate-400">Уровень ИИ</span>
                       <select
                         value={level}
@@ -628,6 +683,41 @@
                       >
                         {Object.keys(LEVEL_CONFIG).map(l => <option key={l} value={l}>{LEVEL_CONFIG[l].label}</option>)}
                       </select>
+                    </div>
+
+                    {/* SOUND */}
+                    <div className="bg-black/10 rounded-xl p-4 border border-white/5 mb-8">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-bold text-slate-400">Звуки</span>
+                        <button
+                          onClick={() => setSoundOn(v => !v)}
+                          className={`px-4 py-2 rounded-xl text-sm font-bold border transition ${
+                            soundOn
+                              ? "bg-[#81b64c] text-white border-[#81b64c]"
+                              : "bg-[#454240] text-slate-200 border-white/10"
+                          }`}
+                        >
+                          {soundOn ? "Вкл" : "Выкл"}
+                        </button>
+                      </div>
+                      <div className="mt-4">
+                        <div className="flex items-center justify-between text-[11px] text-slate-500 font-bold uppercase tracking-widest mb-2">
+                          <span>Громкость</span>
+                          <span className="font-mono">{Math.round(soundVol * 100)}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.01"
+                          value={soundVol}
+                          onChange={(e) => setSoundVol(Number(e.target.value))}
+                          className="w-full accent-[#81b64c]"
+                        />
+                      </div>
+                      <div className="mt-3 text-[10px] text-slate-500">
+                        Если звук не слышно: сделай 1 клик по странице (браузер разблокирует audio).
+                      </div>
                     </div>
 
                     <button
